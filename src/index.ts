@@ -1,3 +1,3 @@
-import Manager from "./lib/manager";
+import Prometeo from "./lib/manager";
 
-export { Manager };
+export = Prometeo;

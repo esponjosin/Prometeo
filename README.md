@@ -15,9 +15,9 @@ npm install prometeo
 Here's a basic example of how to use Prometeo to download a file:
 
 ```javascript
-const { Prometeo } = require('prometeo');
+const Manager = require('prometeo');
 
-const prometeo = new Prometeo({
+const prometeo = new Manager({
   connections: 4, // Number of concurrent download connections (optional)
   tempdir: '/path/to/temp/folder', // Temporary storage directory (optional)
   userAgent: 'Your User Agent', // User agent for HTTP requests (optional)
