@@ -2,7 +2,7 @@ import EventEmitter from "events";
 import fs from "fs";
 import Error from "../utils/errors";
 import { resolve } from "path";
-import URLUtils from "../utils/URL";
+import URLUtils from "../utils/url";
 import Connection from "./connection";
 import StreamSpeed from "streamspeed";
 import Writer from "../utils/writeStream";
