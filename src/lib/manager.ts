@@ -42,8 +42,15 @@ export default class Prometeo extends EventEmitter {
 	 * Constructor for the Prometeo class.
 	 * @param options Configuration options for Prometeo.
 	 */
-	constructor(options: PrometeoOptions) {
+	constructor(options: PrometeoOptions = {}) {
 		super();
+
+		if(typeof options !== 'object') {
+			throw new Error(
+				'InvalidArgumentError',
+				'Prometeo constructor requires an object argument.'
+			)
+		}
 
 		// Validate and configure Prometeo options.
 		this._validateOptions(options);
@@ -254,23 +261,23 @@ export default class Prometeo extends EventEmitter {
 	 * @returns A Promise that resolves to a File object representing the ongoing download.
 	 * @throws {Error} If the URL, filename, or path is invalid, or if the download encounters an error.
 	 */
-	async download(url: string, path: string, filename?: string): Promise<File> {
+	async download(options: {url: string, path: string, filename?: string}): Promise<File> {
 		// Validate the URL, filename, and path parameters.
-		if (typeof url !== "string" || url.length === 0) {
+		if (typeof options.url !== "string" || options.url.length === 0) {
 			throw new Error(
 				"InvalidArgumentError",
 				"The URL must be a non-empty string.",
 			);
 		}
 
-		if (filename && (typeof filename !== "string" || filename.length === 0)) {
+		if (options.filename && (typeof options.filename !== "string" || options.filename.length === 0)) {
 			throw new Error(
 				"InvalidArgumentError",
 				"The filename must be a non-empty string.",
 			);
 		}
 
-		if (typeof path !== "string" || path.length === 0) {
+		if (typeof options.path !== "string" || options.path.length === 0) {
 			throw new Error(
 				"InvalidArgumentError",
 				"The path must be a non-empty string.",
@@ -278,12 +285,12 @@ export default class Prometeo extends EventEmitter {
 		}
 
 		// Validate the URL for correctness.
-		if (!URLUtils.validate(url)) {
+		if (!URLUtils.validate(options.url)) {
 			throw new Error("BadURLError", "The URL is invalid.");
 		}
 
 		// Retrieve data about the URL, such as its size and content type.
-		const URLData = await URLUtils.getData(url).catch(
+		const URLData = await URLUtils.getData(options.url).catch(
 			(e) =>
 				new Error("BadURLError", "The URL returned an incorrect answer.", e),
 		);
@@ -299,9 +306,9 @@ export default class Prometeo extends EventEmitter {
 		}
 
 		// Create the destination folder if it doesn't exist.
-		if (!fs.existsSync(path)) {
+		if (!fs.existsSync(options.path)) {
 			try {
-				mkdirp.sync(path);
+				mkdirp.sync(options.path);
 			} catch (e) {
 				throw new Error(
 					"InternalError",
@@ -312,8 +319,8 @@ export default class Prometeo extends EventEmitter {
 		}
 
 		// Determine the file type and final name of the downloaded file.
-		const fileType = filename ? extname(filename) : URLData.fileType;
-		let finalName = filename || URLData.fileName;
+		const fileType = options.filename ? extname(options.filename) : URLData.fileType;
+		let finalName = options.filename || URLData.fileName;
 
 		// Generate a valid filename if the current name is not valid.
 		if (!URLUtils.isValidFileName(finalName)) {
@@ -324,10 +331,10 @@ export default class Prometeo extends EventEmitter {
 		const tempDir = resolve(this.tempDir, finalName.replace(fileType, ""));
 
 		// Build the final path for the downloaded file.
-		path = resolve(path, finalName);
+		options.path = resolve(options.path, finalName);
 
 		// Check if a file with the same name already exists at the destination path.
-		if (fs.existsSync(path) && fs.statSync(path).isFile()) {
+		if (fs.existsSync(options.path) && fs.statSync(options.path).isFile()) {
 			throw new Error(
 				"InvalidArgumentError",
 				"The path already exists. Delete the file or rename it.",
@@ -353,12 +360,12 @@ export default class Prometeo extends EventEmitter {
 
 		// Create a new File instance representing the download.
 		const file = new File({
-			url: url,
+			url: options.url,
 			path: tempDir,
 			name: finalName,
 			size: URLData.size,
 			parts: parts,
-			destination: path,
+			destination: options.path,
 			speed: this.speedLimit,
 			contentType: URLData.contentType,
 			finished: false,
