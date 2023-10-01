@@ -524,7 +524,7 @@ export class File extends EventEmitter {
 				Download.log(`Joining part ${file[0]}`);
 
 				// Create a read stream for the file part.
-				const fileContent = fs.createReadStream(file[1][0]);
+				const fileContent = fs.createReadStream(file[0]);
 
 				// Pipe the file content to the composed file stream, with 'end' set to false.
 				fileContent.pipe(stream, { end: false });
@@ -533,7 +533,7 @@ export class File extends EventEmitter {
 				await new Promise((resolve, reject) => {
 					fileContent.on("end", () => {
 						resolve(path);
-						fs.rmSync(file[1][0]);
+						fs.rmSync(file[0]);
 					});
 				});
 			}

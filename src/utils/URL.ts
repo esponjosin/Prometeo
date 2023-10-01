@@ -21,7 +21,7 @@ export default class {
 	}
 
 	static isValidFileName(filename: string) {
-		const patron = /^[a-zA-Z0-9\.\-]+$/;
+		const patron = /^[a-zA-Z0-9\.\-\_]+$/;
 
 		return patron.test(filename);
 	}
