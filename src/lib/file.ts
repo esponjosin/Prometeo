@@ -520,10 +520,9 @@ export class File extends EventEmitter {
 		});
 	}
 
-	remove() {
+	async remove() {
 		try {
-			this.emit("stop");
-			this.logStream.stop();
+			await this.stop();
 			fs.rmSync(this.path, { recursive: true, force: true });
 			this.emit('removed')
 		} catch(e) {
