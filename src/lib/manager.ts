@@ -7,6 +7,7 @@ import URLUtils from "../utils/url";
 import { tmpdir } from "os";
 import { mkdirp } from "mkdirp";
 import { PrometeoEvents, PrometeoHandler } from "../types/manager.events";
+import { setTimeout as wait } from "timers/promises";
 
 // Default values for Prometeo options.
 const defaultProps = {
@@ -36,7 +37,7 @@ export default class Prometeo extends EventEmitter {
 	private speedLimit: number;
 
 	// Array to store ongoing downloads.
-	private downloads: File[];
+	downloads: File[];
 
 	/**
 	 * Constructor for the Prometeo class.
@@ -51,6 +52,8 @@ export default class Prometeo extends EventEmitter {
 				'Prometeo constructor requires an object argument.'
 			)
 		}
+
+		options = Object.assign({}, defaultProps, options);
 
 		// Validate and configure Prometeo options.
 		this._validateOptions(options);
@@ -192,7 +195,7 @@ export default class Prometeo extends EventEmitter {
 		// Validate the user agent string.
 		if (
 			options.userAgent &&
-			(typeof options.userAgent !== "string" || options.userAgent.trim() === "")
+			(typeof options.userAgent !== "string")
 		) {
 			throw new Error(
 				"InvalidArgumentError",
@@ -219,7 +222,13 @@ export default class Prometeo extends EventEmitter {
 	 * Scans the temporary directory for partially completed downloads and resumes them.
 	 * Additionally, removes invalid or completed downloads from the directory.
 	 */
-	private _loadDownloads_() {
+	private async _loadDownloads_() {
+
+		while(!this.tempDir) {
+			wait(100)
+		}
+
+		const self = this;
 		// Read the list of folders in the temporary directory.
 		const folders = fs.readdirSync(this.tempDir);
 
@@ -234,14 +243,24 @@ export default class Prometeo extends EventEmitter {
 			if (data && !data.finished) {
 				// Create a new File instance for the download and mark it as resumed.
 				const file = new File(
-					Object.assign(data, { resumed: true, speed: this.speedLimit }),
+					Object.assign(data, { resumed: true, speed: self.speedLimit }),
 				);
 
+				file.on('finish', () => {
+					self.downloads = self.downloads.filter(x => x !== file);
+					self.emit('removed', file.name)
+				})
+
+				file.on('removed', () => {
+					self.downloads = self.downloads.filter(x => x !== file);
+					self.emit('removed', file.name)
+				})
+
 				// Add the resumed download to the downloads array.
-				this.downloads.push(file);
+				self.downloads.push(file);
 
 				// Emit a 'download' event to notify listeners about the resumed download.
-				this.emit("download", file);
+				self.emit("download", file);
 			} else {
 				// If the download is invalid or already finished, attempt to remove it from the directory.
 				try {
@@ -262,6 +281,8 @@ export default class Prometeo extends EventEmitter {
 	 * @throws {Error} If the URL, filename, or path is invalid, or if the download encounters an error.
 	 */
 	async download(options: {url: string, path: string, filename?: string}): Promise<File> {
+
+		const self = this;
 		// Validate the URL, filename, and path parameters.
 		if (typeof options.url !== "string" || options.url.length === 0) {
 			throw new Error(
@@ -302,7 +323,8 @@ export default class Prometeo extends EventEmitter {
 
 		// Check if the URL accepts range requests.
 		if (!URLData.acceptRange) {
-			throw new Error("BadURLError", "The URL does not accept range requests.");
+			const check = await URLUtils.checkRange(options.url).catch(() => false)
+			if(!check) throw new Error("BadURLError", "The URL does not accept range requests.");
 		}
 
 		// Create the destination folder if it doesn't exist.
@@ -369,6 +391,7 @@ export default class Prometeo extends EventEmitter {
 			speed: this.speedLimit,
 			contentType: URLData.contentType,
 			finished: false,
+			userAgent: this.userAgent
 		});
 
 		// Add the download to the list of ongoing downloads.
@@ -376,6 +399,16 @@ export default class Prometeo extends EventEmitter {
 
 		// Emit a 'download' event to notify listeners about the new download.
 		this.emit("download", file);
+
+		file.on('finish', () => {
+			self.downloads = this.downloads.filter(x => x !== file);
+			self.emit('removed', file.name)
+		})
+
+		file.on('removed', () => {
+			self.downloads = self.downloads.filter(x => x !== file);
+			self.emit('removed', file.name)
+		})
 
 		// Return the File object representing the ongoing download.
 		return file;

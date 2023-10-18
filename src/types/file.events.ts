@@ -4,6 +4,7 @@ export type FileEvents = {
 	progress: [speed: string, progress: number, estimated: number];
 	finish: [];
 	start: [];
+	removed: []
 };
 
 export type FileHandler = {

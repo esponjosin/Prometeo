@@ -11,7 +11,7 @@ import {
 	ConnectionHandler,
 } from "../types/connection.events";
 
-interface ConnectionOptions {
+export interface ConnectionOptions {
 	url: string;
 	part: [number, string, [number, number]];
 	speed: number;
@@ -36,7 +36,7 @@ export default class Connection extends EventEmitter {
 	private speedLimit: number;
 	private range: [number, number];
 	speed: number;
-	private index: number;
+	readonly index: number;
 	private _progress: number;
 	private Manager: File;
 	finished: boolean;
@@ -152,6 +152,41 @@ export default class Connection extends EventEmitter {
 					{ timeUnit: "s", precision: 3 },
 				)}`,
 			);
+			const controller = new AbortController();
+			const throttle: Throttle = new OriginalThrottle({ rate: this.getSpeed });
+
+			// Listen for speed changes and adjust the throttle accordingly.
+			function speedHandler(speed: number) {
+				if (!connection.finished) {
+					connection.log(
+						`Changing speed to: ${StreamSpeed.toHuman(speed, {
+							timeUnit: "s",
+							precision: 3,
+						})}`,
+					);
+					connection.speedLimit = speed;
+					throttle.chunksize = speed;
+					if (throttle.bucket) {
+						throttle.bucket.bucketSize = speed;
+						throttle.bucket.tokensPerInterval = speed;
+					}
+				}
+			}
+			connection.Manager.on("speed", speedHandler);
+
+			// Listen for stop events to gracefully stop the download.
+			function stopHandler() {
+				if (!connection.stopped && !connection.finished) {
+					connection.log(`Stopping Connection ${connection.index}`);
+					controller.abort();
+					st.close();
+					connection.emit("destroy");
+					connection.stopped = true;
+				}
+				connection.Manager.removeListener("stop", stopHandler)
+				connection.Manager.removeListener("speed", speedHandler)
+			}
+			connection.Manager.on("stop", stopHandler);
 
 			// Determine the size of the part that has already been downloaded.
 			const partSize =
@@ -163,6 +198,7 @@ export default class Connection extends EventEmitter {
 				// If the entire part is already downloaded, mark it as finished.
 				connection.log("Part is already downloaded");
 				connection.emit("finish", true);
+				connection.totalDownloaded = partSize
 				connection.finished = true;
 				return resolve(true);
 			} else if (partSize > 0) {
@@ -170,27 +206,32 @@ export default class Connection extends EventEmitter {
 				connection.log(
 					"Part already downloaded, but not complete, resuming...",
 				);
+
+				connection._progress = 0;
+				connection.totalDownloaded = partSize
+
 			}
 
 			// Create a write stream to save the downloaded data.
 			const st = fs.createWriteStream(connection.file, { flags: "a" });
-			const controller = new AbortController();
-			const throttle: Throttle = new OriginalThrottle({ rate: this.getSpeed });
 			try {
 				// Make a GET request to download the part with a range header to resume.
+
+				const headers: {Range: string, 'User-Agent'?: string } = {
+					Range:
+						"bytes=" +
+						(connection.range[0] + partSize) +
+						"-" +
+						connection.range[1]
+				}
+
+				if(connection.Manager.userAgent.length) headers["User-Agent"] = connection.Manager.userAgent
+
 				const req = await axios({
 					method: "GET",
 					url: connection.url,
 					responseType: "stream",
-					headers: {
-						Range:
-							"bytes=" +
-							(connection.range[0] + partSize) +
-							"-" +
-							connection.range[1],
-						"User-Agent":
-							"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/53",
-					},
+					headers: headers,
 					signal: controller.signal,
 					onDownloadProgress: (progressEvent) => {
 						// Update the download progress and speed.
@@ -223,36 +264,7 @@ export default class Connection extends EventEmitter {
 
 				if (!req) return;
 
-				// Listen for speed changes and adjust the throttle accordingly.
-				connection.Manager.on("speed", (speed: number) => {
-					if (!connection.finished) {
-						connection.log(
-							`Changing speed to: ${StreamSpeed.toHuman(speed, {
-								timeUnit: "s",
-								precision: 3,
-							})}`,
-						);
-						connection.speedLimit = speed;
-						throttle.chunksize = speed;
-						if (throttle.bucket) {
-							throttle.bucket.bucketSize = speed;
-							throttle.bucket.tokensPerInterval = speed;
-						}
-					}
-				});
-
 				const readStream = req.data;
-
-				// Listen for stop events to gracefully stop the download.
-				connection.Manager.on("stop", () => {
-					if (!connection.stopped && !connection.finished) {
-						connection.log(`Stopping Connection ${connection.index}`);
-						controller.abort();
-						st.close();
-						connection.emit("destroy");
-						connection.stopped = true;
-					}
-				});
 
 				// Pipeline the read stream through the throttle and write to the file.
 				await pipeline(readStream.pipe(throttle), st);

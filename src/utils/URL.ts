@@ -26,6 +26,30 @@ export default class {
 		return patron.test(filename);
 	}
 
+	static checkRange(url: string) {
+
+		return new Promise(async (resolve, reject) => {
+
+			try {
+				let res = await fetch(url, {
+					headers: {
+						'Range': 'bytes=0-100'
+					}
+				})
+
+				if (res.status === 206) {
+					resolve(true);
+				} else {
+					reject(false)
+				}
+			} catch(e) {
+				reject(false)
+			}
+
+		})
+
+	}
+
 	static generateFilename(ext: string) {
 		return crypto.randomBytes(16).toString("hex") + ext;
 	}

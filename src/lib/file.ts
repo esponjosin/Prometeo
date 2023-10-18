@@ -3,7 +3,7 @@ import fs from "fs";
 import Error from "../utils/errors";
 import { resolve } from "path";
 import URLUtils from "../utils/url";
-import Connection from "./connection";
+import Connection, { ConnectionOptions } from "./connection";
 import StreamSpeed from "streamspeed";
 import Writer from "../utils/writeStream";
 import { mkdirp } from "mkdirp";
@@ -27,6 +27,7 @@ export interface FileOptions {
 	destination: string;
 	contentType: string;
 	finished: boolean;
+	userAgent: string;
 }
 
 export class File extends EventEmitter {
@@ -42,8 +43,12 @@ export class File extends EventEmitter {
 	private inter?: NodeJS.Timeout;
 	private contentType: string;
 	private stoped: boolean;
-	private destination: string;
+	private paused: boolean
+	readonly destination: string;
+	private activeObserver?: Promise<string>
 	private allConfig: FileOptions;
+	finishedPromise?: (value: string | PromiseLike<string>) => void;
+	readonly userAgent: string
 
 	/**
 	 * Represents an ongoing file download with multiple connections.
@@ -131,8 +136,10 @@ export class File extends EventEmitter {
 		this.parts = download.parts;
 		this.speed = download.speed;
 		this.stoped = false;
+		this.paused = false;
 		this.allConfig = download;
 		this.contentType = download.contentType;
+		this.userAgent = download.userAgent;
 		this.connections = [];
 		this.logStream = new Writer(resolve(this.path, "./prometeo.log"), {
 			flags: "a",
@@ -152,6 +159,24 @@ export class File extends EventEmitter {
 		} else {
 			this.log(`Restarting download`);
 			this.log(`Revalidating URL`);
+
+			let progress: number[] = [];
+
+			for (const part of Object.entries(this.parts)) {
+
+				const partSize =
+				fs.existsSync(part[1][0]) && fs.statSync(part[1][0])
+					? fs.statSync(part[1][0]).size
+					: 0;
+
+				if (partSize < part[1][1]) {
+					progress.push((part[1][1] / partSize) * 100);
+				}
+		
+			}
+
+			this.progress = progress.reduce((a, b) => a + b, 0) / progress.length;
+
 			this.revalidateURL().then((val) => {
 				if (val) {
 					this.log(`URL is valid`);
@@ -270,6 +295,8 @@ export class File extends EventEmitter {
 
 		// Mark the download as stopped.
 		this.stoped = true;
+		clearInterval(this.inter);
+		this.inter = undefined;
 
 		return new Promise((resolve, reject) => {
 			// Wait for pending log writes to complete.
@@ -283,16 +310,27 @@ export class File extends EventEmitter {
 			// Set a timeout to ensure resolution if log writes don't complete within 1 second.
 			setTimeout(() => {
 				if (file.logStream.pendingWrites === 0) resolve(true);
-			}, 1000);
+			}, 500);
 		});
+
+	}
+
+	pause() {
+		this.paused = true;
+		return this.stop();
 	}
 
 	/**
 	 * Initiates the download of file parts, manages progress updates, and resolves when the download is completed.
 	 * @returns A promise that resolves when the download is completed or rejects on certain errors.
 	 */
-	async start() {
+	async start(): Promise<string|boolean> {
 		const File = this;
+
+		if(this.paused) {
+			this.stoped = false;
+			this.paused = false;
+		}
 
 		return new Promise(async (resolve, reject) => {
 			const Download = this;
@@ -308,7 +346,7 @@ export class File extends EventEmitter {
 			Download.emit("start");
 
 			// Set an interval to monitor download progress and emit progress events.
-			File.inter = setInterval(() => {
+			if(!File.inter) File.inter = setInterval(() => {
 				const connections = Download.connections.filter((c) => !c.finished);
 
 				if (Download.connections.length === 0) {
@@ -321,15 +359,13 @@ export class File extends EventEmitter {
 						waitingLog = true;
 					}
 				} else if (connections.length) {
-					// Calculate and emit download progress.
-					const progress = Math.round(
-						connections.reduce((a, b) => a + b.progress, 0) /
-							connections.length,
-					);
 					const totalDownloaded = Download.connections.reduce(
 						(a, b) => a + b.totalDownloaded,
 						0,
 					);
+
+					const progress = Math.round((totalDownloaded / Download.size) * 100);
+
 					const speed = Math.round(
 						connections.reduce((a, b) => a + b.speed, 0),
 					);
@@ -362,32 +398,48 @@ export class File extends EventEmitter {
 
 			// Start connections for each file part.
 			for (const part of Object.entries(this.parts)) {
-				const connection = new Connection(Download, {
+
+				Download.newConnection(Download, {
 					speed: Download.speed / Object.entries(this.parts).length,
 					url: Download.url,
 					part: [Number(part[0]), part[1][0], part[1][1]],
 					contentType: Download.contentType,
-				});
-
-				connection.on("log", (msg) => {
-					Download.log(msg);
-				});
-
-				connection.on("destroy", () => {
-					Download.log(`Connection ${Number(part[0])} destroyed`);
-					Download.connections = Download.connections.filter(
-						(c) => c !== connection,
-					);
-				});
-
-				this.connections.push(connection);
-				connection.start();
+				})
+		
 			}
 
 			// Wait for the download to complete and resolve the promise with the downloaded file information.
-			const file = await Download.observer();
-			resolve(file);
+			if(!this.activeObserver) {
+				this.activeObserver = Download.observer()
+			};
+			this.activeObserver.then(file => {
+				resolve(file)
+			});
 		});
+	}
+
+	newConnection(self: File, options: ConnectionOptions) {
+
+		const connection = new Connection(self, options);
+
+		connection.on("log", (msg) => {
+			self.log(msg);
+		});
+
+		connection.on("destroy", () => {
+			self.log(`Connection ${Number(connection.index)} destroyed`);
+			self.connections = self.connections.filter(
+				(c) => c !== connection,
+			);
+			if(!self.stoped && !connection.finished) {
+				self.log(`Retrying connection download`)
+				self.newConnection(self, options);
+			}
+		});
+
+		this.connections.push(connection);
+		connection.start()
+
 	}
 
 	/**
@@ -419,16 +471,17 @@ export class File extends EventEmitter {
 		const Download = this;
 
 		return new Promise(async (res, reject) => {
+
+			if(!Download.finishedPromise) Download.finishedPromise = res;
+
 			// Get the list of connections that are not finished.
 			const finished = Download.connections.filter((c) => !c.finished);
-
 			// Check if all connections are finished and the download is not stopped.
-			if (finished.length === 0 && !Download.stoped) {
+			if (finished.length === 0 && !Download.stoped && !Download.paused) {
 				clearInterval(Download.inter);
 
 				// Log download completion and emit 'finished' event.
 				Download.log(`File download finished`);
-				Download.emit("finish");
 
 				// Log the process of joining parts to form the original file.
 				Download.log(`Joining parts to form the original file`);
@@ -451,6 +504,7 @@ export class File extends EventEmitter {
 					// Perform cleanup and resolve with the path of the downloaded file.
 					await Download.cleanup();
 					res(file);
+					Download.emit("finish");
 				}
 			} else {
 				if (prevValue !== finished.length) {
@@ -460,9 +514,29 @@ export class File extends EventEmitter {
 
 				// Wait for a short duration and recursively call the observer to check progress.
 				await wait(100);
-				resolve(await Download.observer(finished.length));
+				await Download.observer(finished.length);
+				Download.finishedPromise(Download.destination);
 			}
 		});
+	}
+
+	remove() {
+		try {
+			this.emit("stop");
+			this.logStream.stop();
+			fs.rmSync(this.path, { recursive: true, force: true });
+			this.emit('removed')
+		} catch(e) {
+			if (fs.existsSync(this.path)) {
+				this.allConfig.finished = true;
+				fs.writeFileSync(
+					resolve(this.path, "./prometeo.config"),
+					Buffer.from(JSON.stringify(this.allConfig))
+						.reverse()
+						.toString("hex"),
+				);
+			}
+		}
 	}
 
 	/**
